@@ -27,7 +27,7 @@ const I = {
 const S = { D: null, me: null, myName: '', groups: [], loaded: false, err: '', data: {}, subs: {}, names: {}, tab: 'camera', thread: null, q: '', preselect: null };
 
 /* ---------- small helpers ---------- */
-const APP_VERSION = '2026-10-31.3';
+const APP_VERSION = '2026-10-31.4';
 function reportError(where, err) {
   const msg = String((err && (err.message || err.error_description || err.code)) || err || 'unknown').slice(0, 900);
   console.error(where, err);
@@ -112,6 +112,91 @@ function installPopup(force = false) {
   };
 }
 
+
+/* ---------- outbox: send in the background, survive app restarts ---------- */
+const Outbox = (() => {
+  let db = null, running = false, timer = null;
+  const mem = new Map(); // id -> item (mirror of what's stored, for the UI)
+  const DELAYS = [3e3, 10e3, 30e3, 60e3, 120e3, 300e3];
+  function open() {
+    if (db) return Promise.resolve(db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('capsule-outbox', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('items', { keyPath: 'id' });
+      r.onsuccess = () => { db = r.result; res(db); };
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function tx(mode, fn) {
+    const d = await open();
+    return new Promise((res, rej) => { const t = d.transaction('items', mode); const st = t.objectStore('items'); const out = fn(st); t.oncomplete = () => res(out && out.result); t.onerror = () => rej(t.error); });
+  }
+  const save = (item) => { mem.set(item.id, item); return tx('readwrite', (st) => st.put(item)).catch(() => {}); };
+  const drop = (id) => { mem.delete(id); return tx('readwrite', (st) => st.delete(id)).catch(() => {}); };
+  async function load() {
+    try { const all = await tx('readonly', (st) => st.getAll()); (all || []).forEach((it) => { if (it.owner === S.me) mem.set(it.id, it); }); } catch { /* private mode: memory only */ }
+  }
+  async function add(files, gids, caption) {
+    for (const f of files) {
+      const isVid = f.type.startsWith('video');
+      const item = {
+        id: crypto.randomUUID(), owner: S.me, at: Date.now(), kind: isVid ? 'video' : 'image', caption,
+        gids: [...gids], snapIds: Object.fromEntries(gids.map((g) => [g, crypto.randomUUID()])), done: [],
+        data: await f.arrayBuffer(), type: f.type || (isVid ? 'video/mp4' : 'image/jpeg'), name: f.name || '', prepared: false, attempts: 0, nextAt: 0,
+      };
+      await save(item);
+    }
+    render(); kick();
+  }
+  function pendingFor(gid) { return [...mem.values()].filter((it) => it.gids.includes(gid) && !it.done.includes(gid)); }
+  function count() { return [...mem.values()].reduce((n, it) => n + it.gids.length - it.done.length, 0); }
+  async function prepare(item) {
+    if (item.prepared) return;
+    const file = new File([item.data], item.name || 'snap', { type: item.type });
+    let out = file;
+    try {
+      if (item.kind === 'video') {
+        if (!document.hidden) out = await compressVideo(file, (p) => { item.progress = p; paintPending(); });
+      } else out = await shrinkImage(file);
+    } catch { out = file; }
+    if (out.size > MAX_BYTES) { const e = new Error('video is too long (keep it under ~1 min)'); e.permanent = true; throw e; }
+    item.data = await out.arrayBuffer(); item.type = out.type || item.type; item.prepared = true; item.progress = null;
+    await save(item);
+  }
+  async function kick() {
+    clearTimeout(timer);
+    if (running || !S.D || !S.me || !navigator.onLine) return;
+    running = true;
+    try {
+      for (const item of [...mem.values()].sort((a, b) => a.at - b.at)) {
+        if (item.nextAt > Date.now()) continue;
+        try {
+          await prepare(item);
+          const blob = new Blob([item.data], { type: item.type });
+          for (const gid of item.gids) {
+            if (item.done.includes(gid)) continue;
+            await S.D.sendSnap(gid, blob, item.kind, item.caption, null, item.snapIds[gid]);
+            item.done.push(gid); await save(item); render();
+          }
+          await drop(item.id); render();
+        } catch (err) {
+          const msg = reportError('outbox', err);
+          if (err && err.permanent) { await drop(item.id); render(); toast('Couldn’t send a snap: ' + msg.slice(0, 70)); continue; }
+          item.attempts += 1; item.nextAt = Date.now() + DELAYS[Math.min(item.attempts - 1, DELAYS.length - 1)]; await save(item); render();
+        }
+      }
+    } finally {
+      running = false;
+      const next = Math.min(...[...mem.values()].map((it) => it.nextAt || 0).filter(Boolean), Infinity);
+      if (mem.size) timer = setTimeout(kick, next === Infinity ? 5000 : Math.max(1000, next - Date.now()));
+    }
+  }
+  function paintPending() { if (S.thread) renderThread(); }
+  window.addEventListener('online', () => kick());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
+  return { load, add, kick, pendingFor, count };
+})();
+
 /* ---------- boot ---------- */
 async function boot() {
   placeTrack(false); paintNav(); syncCamera(0);
@@ -124,7 +209,9 @@ async function boot() {
   try {
     S.D = demo ? await import('./data-demo.js') : await import('./data-supabase.js');
     S.me = await S.D.init();
-    S.myName = (await S.D.getMyName()) || '';
+    let cachedName = ''; try { cachedName = localStorage.getItem('capsule:name:' + S.me) || ''; } catch {}
+    if (cachedName) { S.myName = cachedName; S.D.getMyName().then((n) => { if (n && n !== S.myName) { S.myName = n; paintMe(); } }).catch(() => {}); }
+    else S.myName = (await S.D.getMyName()) || '';
   } catch (e) {
     console.error(e);
     const msg = String((e && (e.code || e.message)) || '');
@@ -136,9 +223,13 @@ async function boot() {
     return;
   }
   if (!S.myName) await onboarding();
+  try { localStorage.setItem('capsule:name:' + S.me, S.myName); } catch {}
   S.names[S.me] = S.myName;
   paintMe();
+  loadCache();
+  await Outbox.load(); Outbox.kick();
   S.D.onGroups((list) => {
+    S.subsLive = true;
     S.groups = list.sort((a, b) => a.unlockAt - b.unlockAt);
     S.loaded = true; S.err = '';
     S.groups.forEach(watchGroup);
@@ -184,7 +275,7 @@ function onboarding() {
 
 function watchGroup(g) {
   if (S.subs[g.id]) return;
-  S.data[g.id] = { snaps: [], msgs: [] };
+  S.data[g.id] = S.data[g.id] || { snaps: [], msgs: [] };
   const a = S.D.onSnaps(g.id, (list) => { S.data[g.id].snaps = list; resolveNames(list.map((x) => x.by)).then((n) => n && render()); render(); });
   const b = S.D.onMsgs(g.id, (list) => { S.data[g.id].msgs = list; resolveNames(list.map((x) => x.by)).then((n) => n && render()); render(); });
   S.subs[g.id] = [a, b];
@@ -225,7 +316,27 @@ function go(tab) { setTab(tab, true); }
 document.querySelectorAll('#nav [data-tab]').forEach((b) => (b.onclick = () => go(b.dataset.tab)));
 window.addEventListener('resize', () => placeTrack(false));
 
+const CACHE_KEY = () => 'capsule:cache:v1:' + S.me;
+function loadCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY()) || 'null');
+    if (!c || S.loaded) return;
+    S.groups = c.groups || []; S.data = c.data || {}; Object.assign(S.names, c.names || {}); S.loaded = true;
+    render();
+  } catch { /* ignore a bad cache */ }
+}
+let cacheTimer = null;
+function saveCache() {
+  clearTimeout(cacheTimer);
+  cacheTimer = setTimeout(() => {
+    if (!S.me || !S.subsLive) return;
+    const data = {};
+    for (const [gid, d] of Object.entries(S.data)) data[gid] = { snaps: d.snaps.slice(-300), msgs: d.msgs.slice(-200) };
+    try { localStorage.setItem(CACHE_KEY(), JSON.stringify({ groups: S.groups, data, names: S.names })); } catch { /* storage full: fine */ }
+  }, 1500);
+}
 function render() {
+  saveCache();
   paintNav();
   renderChat();
   renderMemories();
@@ -440,6 +551,8 @@ function lastActivity(g) { const d = S.data[g.id] || {}; return [...(d.snaps || 
 function statusLine(g) {
   const d = S.data[g.id] || { snaps: [], msgs: [] }; const last = lastActivity(g); const n = d.snaps.length;
   const L = (sq, html) => `<span class="sq ${sq}"></span><span class="st">${html}</span>`;
+  const pend = Outbox.pendingFor(g.id).length;
+  if (pend && !isOpen(g)) return L('pend', `<b>Sending${pend > 1 ? ' ' + pend : ''}…</b> · opens in ${shortLeft(g.unlockAt)}`);
   if (isOpen(g)) return n ? L('open', `<b style="color:var(--open)">Opened</b> · ${n} snap${n === 1 ? '' : 's'} to watch`) : L('empty', 'Opened · nothing was sealed');
   if (last && last.type === 'msg') return L('chat', `<b style="color:var(--chat)">${esc(who(last.by))}:</b> ${esc(last.text)} · ${ago(last.at)}`);
   if (n) return L('sealed', `<b style="color:var(--accent)">${n} sealed</b> · opens in ${shortLeft(g.unlockAt)}${last ? ' · ' + ago(last.at) : ''}`);
@@ -580,7 +693,8 @@ function closeThread(animate = true) {
   render(); syncCamera(animate ? 350 : 0);
 }
 function threadBody(g, d, open) {
-  const items = [...d.snaps, ...d.msgs].sort((a, b) => a.at - b.at);
+  const pend = Outbox.pendingFor(g.id).map((it) => ({ id: 'p-' + it.id, type: 'pending', by: S.me, at: it.at, kind: it.kind, progress: it.progress, attempts: it.attempts }));
+  const items = [...d.snaps, ...d.msgs, ...pend].sort((a, b) => a.at - b.at);
   if (!items.length) return `<div class="empty">${groupAvatar(g)}<h2>${esc(g.name)}</h2><p style="margin:0">${open ? 'This group is open, but nothing was sealed.' : 'Send the first snap. It stays sealed until ' + esc(fmtDate(g.unlockAt)) + '.'}</p>${open ? '' : '<button class="pillbtn ghost" id="tinv">Invite friends</button>'}</div>`;
   let body = '', lastDay = '', lastBy = null, openBlk = false;
   const opens = esc(new Date(g.unlockAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }));
@@ -589,6 +703,7 @@ function threadBody(g, d, open) {
     if (day !== lastDay) { if (openBlk) { body += '</div></div>'; openBlk = false; } body += `<div class="day">${esc(fmtDay(it.at))}</div>`; lastDay = day; lastBy = null; }
     if (it.by !== lastBy) { if (openBlk) body += '</div></div>'; body += `<div class="blk"><div class="who" style="color:${colorOf(it.by)}">${esc(who(it.by))}</div><div class="lines" style="color:${colorOf(it.by)}">`; openBlk = true; lastBy = it.by; }
     if (it.type === 'msg') body += `<div class="mtext">${esc(it.text)}</div>`;
+    else if (it.type === 'pending') body += `<div class="snapline pending"><span class="sq pend"></span>${it.progress != null ? 'Compressing ' + Math.round(it.progress * 100) + '%' : it.attempts ? 'Waiting for connection' : 'Sending'}…<span class="sub">· ${it.kind === 'video' ? 'video' : 'snap'}</span></div>`;
     else if (open) { const k = d.snaps.indexOf(it); body += `<button class="snapline open" data-v="${k}"><span class="sq open"></span>${it.kind === 'video' ? 'Video' : 'Snap'}<span class="sub">· tap to view</span></button>${it.caption ? `<div class="mtext" style="color:var(--muted)">“${esc(it.caption)}”</div>` : ''}`; }
     else body += `<div class="snapline sealed"><span class="sq sealed"></span>Sealed ${it.kind === 'video' ? 'Video' : 'Snap'}<span class="sub">· opens ${opens}</span></div>`;
   }
@@ -761,29 +876,14 @@ function sendTo(files, caption, closePreview) {
   }
   async function doSend() {
     if (sending) return; sending = true;
-    const btn = $('#sgo', v), prog = $('#sprog', v), bar = prog.firstElementChild; btn.disabled = true; prog.classList.remove('hidden');
-    bar.style.width = '4%';
-    const total = files.length * picked.length; let done = 0; const fails = [];
-    for (const f of files) {
-      const isVid = f.type.startsWith('video');
-      let blob;
-      const names = $('.sendbar .names', v);
-      try {
-        if (isVid) { names.textContent = 'Compressing video…'; blob = await compressVideo(f, (p) => (names.textContent = `Compressing video… ${Math.round(p * 100)}%`)); }
-        else blob = await shrinkImage(f);
-      } catch { blob = f; }
-      names.textContent = files.length > 1 ? `Sealing ${files.indexOf(f) + 1} of ${files.length}…` : 'Sealing…';
-      if (blob.size > MAX_BYTES) { fails.push('a video that’s too long (keep it under ~1 min)'); done += picked.length; continue; }
-      for (const gid of picked) {
-        try { await S.D.sendSnap(gid, blob, isVid ? 'video' : 'image', caption, (p) => (bar.style.width = ((done + p) / total) * 100 + '%')); }
-        catch (err) { const m = reportError('sendSnap', err); fails.push(/full/i.test(m) ? 'a snap: the capsule storage is full' : 'a snap (' + m.slice(0, 60) + ')'); }
-        done++; bar.style.width = (done / total) * 100 + '%';
-      }
-    }
-    const target = picked.length === 1 ? picked[0] : null;
+    const btn = $('#sgo', v); if (btn) btn.disabled = true;
+    const names = $('.sendbar .names', v); if (names) names.textContent = 'Sending…';
+    const gids = [...picked];
+    try { await Outbox.add(files, gids, caption); }
+    catch (err) { sending = false; if (btn) btn.disabled = false; toast('Couldn’t queue the snap: ' + reportError('outbox.add', err).slice(0, 70)); return; }
     S.preselect = null; v.remove(); closePreview();
-    if (fails.length) toast(`Couldn’t send ${fails.length === 1 ? fails[0] : fails.length + ' snaps'}. Try again.`); else toast(files.length > 1 ? `${files.length} snaps sealed 🔒` : 'Snap sealed 🔒');
-    setTab('chat', false); if (target) openThread(target);
+    setTab('chat', false);
+    toast(files.length > 1 ? `Sending ${files.length} snaps…` : 'Sending…');
   }
   draw();
 }

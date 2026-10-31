@@ -39,9 +39,11 @@ export async function joinByCode(code) { const g = groups.find((x) => x.code ===
 export function onSnaps(gid, cb) { return listen('s' + gid, cb, (snaps[gid] || []).slice()); }
 export function onMsgs(gid, cb) { return listen('m' + gid, cb, (msgs[gid] || []).slice()); }
 export async function sendMsg(gid, text) { msgs[gid].push({ id: 'm' + Date.now(), type: 'msg', by: uid, text, at: Date.now() }); fire('m' + gid, msgs[gid].slice()); }
-export async function sendSnap(gid, blob, kind, caption, onProgress) {
+export async function sendSnap(gid, blob, kind, caption, onProgress, id) {
+  await new Promise((r) => setTimeout(r, 1200)); // pretend upload
   onProgress && onProgress(1);
-  snaps[gid].push({ id: 's' + Date.now() + Math.random(), type: 'snap', by: uid, kind, path: URL.createObjectURL(blob), caption, at: Date.now() });
+  if (snaps[gid].some((x) => x.id === id)) return;
+  snaps[gid].push({ id: id || ('s' + Date.now() + Math.random()), type: 'snap', by: uid, kind, path: URL.createObjectURL(blob), caption, at: Date.now() });
   fire('s' + gid, snaps[gid].slice());
 }
 export async function mediaUrl(s) { return s.path; }

@@ -108,23 +108,35 @@ export async function sendMsg(gid, text) {
   must(await sb.from('msgs').insert({ group_id: gid, text }));
 }
 
-export async function sendSnap(gid, blob, kind, caption, onProgress) {
+// Idempotent: the same `id` can be retried safely (after a dropped connection or an app restart).
+// Errors that retrying can't fix carry err.permanent = true.
+export async function sendSnap(gid, blob, kind, caption, onProgress, id = crypto.randomUUID()) {
   const type = (blob.type || (kind === 'video' ? 'video/mp4' : 'image/jpeg')).split(';')[0];
   const ext = type.includes('quicktime') ? 'mov' : (type.split('/')[1] || 'bin').replace('jpeg', 'jpg');
-  const path = `${gid}/${uid}/${crypto.randomUUID()}.${ext}`;
+  const path = `${gid}/${uid}/${id}.${ext}`;
   onProgress && onProgress(0.05);
   const { error } = await sb.storage.from('snaps').upload(path, blob, { contentType: type, upsert: false, cacheControl: '31536000' });
   if (error) {
-    // the upload rule refuses files when storage is ~full (keeps the project on the free plan)
-    if (/row-level security|policy/i.test(error.message || '')) {
-      let room = true;
-      try { room = must(await sb.rpc('storage_has_room')); } catch { /* ignore */ }
-      if (!room) throw new Error('capsule storage is full');
+    const msg = String(error.message || '');
+    const status = Number(error.statusCode || error.status || 0);
+    const already = status === 409 || /already exists|duplicate/i.test(msg);
+    if (!already) {
+      if (/row-level security|policy|unauthorized/i.test(msg) || status === 403) {
+        let room = true;
+        try { room = must(await sb.rpc('storage_has_room')); } catch { /* ignore */ }
+        const e = new Error(room ? 'this group has already opened, or you’re no longer in it' : 'capsule storage is full');
+        e.permanent = true; throw e;
+      }
+      if (status === 413 || /too large|exceeded the maximum/i.test(msg)) { const e = new Error('file is too big'); e.permanent = true; throw e; }
+      throw error; // network hiccup etc. — will be retried
     }
-    throw error;
   }
-  onProgress && onProgress(0.95);
-  must(await sb.from('snaps').insert({ group_id: gid, kind, path, caption }));
+  onProgress && onProgress(0.9);
+  const { error: e2 } = await sb.from('snaps').insert({ id, group_id: gid, kind, path, caption });
+  if (e2 && e2.code !== '23505') { // 23505 = already saved on an earlier try
+    if (e2.code === '42501') { const e = new Error('this group has already opened'); e.permanent = true; throw e; }
+    throw e2;
+  }
 }
 
 // Signed links are kept for a week (memory + localStorage), so the same link is reused and the

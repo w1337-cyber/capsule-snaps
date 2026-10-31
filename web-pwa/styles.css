@@ -239,3 +239,8 @@ input,textarea{user-select:text;-webkit-user-select:text}
 .arrowhint{align-self:center;font-size:40px;font-weight:900;color:var(--accent);animation:bob 1.1s ease-in-out infinite}
 @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(10px)}}
 .install{cursor:pointer}
+
+/* sending (outbox) */
+.sq.pend{border:2px solid #b4b6bb;background:transparent;animation:pulse 1s ease-in-out infinite}
+.snapline.pending{color:var(--muted)}
+@keyframes pulse{50%{opacity:.35}}
