@@ -1,6 +1,7 @@
+# Netlify: serve the installable web app straight from web-pwa/ (no build step).
 [build]
-  publish = "."
-  command = ""
+  publish = "web-pwa"
+  command = "echo 'static site, no build'"
 
 [[headers]]
   for = "/sw.js"
