@@ -1,0 +1,26 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /groups/{gid}/{file} {
+      function grp() {
+        return firestore.get(/databases/(default)/documents/groups/$(gid)).data;
+      }
+      function isMember() {
+        return request.auth != null && request.auth.uid in grp().members;
+      }
+
+      // THE LOCK: nobody (not even the sender) can download a snap before the unlock time.
+      allow read: if isMember() && request.time >= grp().unlockAt;
+
+      // Upload only before unlock, only images/videos, only into a file named after yourself.
+      allow create: if isMember()
+        && request.time < grp().unlockAt
+        && file.matches(request.auth.uid + '_.*')
+        && request.resource.size < 150 * 1024 * 1024
+        && (request.resource.contentType.matches('image/.*')
+            || request.resource.contentType.matches('video/.*'));
+
+      allow update, delete: if false;
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "expo": {
+    "name": "Capsule",
+    "slug": "capsule-snaps",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "backgroundColor": "#000000",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "bundleIdentifier": "com.williamjannert.capsule",
+      "supportsTablet": false,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.williamjannert.capsule",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Capsule uses the camera so you can take snaps for your group capsule.",
+          "microphonePermission": "Capsule uses the microphone to record sound in video snaps.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Capsule needs your photos so you can seal them into a group capsule.",
+          "cameraPermission": "Capsule uses the camera so you can take snaps for your group capsule.",
+          "microphonePermission": "Capsule uses the microphone to record sound in video snaps."
+        }
+      ],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": false,
+          "supportsPictureInPicture": false
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#f5b84b"
+        }
+      ],
+      "@react-native-community/datetimepicker"
+    ]
+  }
+}
