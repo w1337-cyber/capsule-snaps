@@ -52,8 +52,11 @@ async function boot() {
     S.myName = (await S.D.getMyName()) || '';
   } catch (e) {
     console.error(e);
-    fatal(e && e.message === 'missing-config'
+    const msg = String((e && (e.code || e.message)) || '');
+    fatal(msg === 'missing-config'
       ? ['Almost there', 'The app isn’t connected to its database yet. Follow the setup steps in the README, then reload.']
+      : /anonymous/i.test(msg)
+      ? ['Sign-up is switched off', 'Guest sign-ins aren’t enabled on the server yet. Ask the app owner to turn on “Allow anonymous sign-ins” in Supabase.']
       : ['Can’t connect', 'Check your internet connection and try again.']);
     return;
   }

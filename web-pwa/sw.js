@@ -1,5 +1,5 @@
 // App shell cache so Capsule opens instantly from the home screen. Data is always fetched live.
-const CACHE = 'capsule-shell-v2';
+const CACHE = 'capsule-shell-v3';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './data-supabase.js', './supabase-config.js', './manifest.webmanifest', './icons/icon-192.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
