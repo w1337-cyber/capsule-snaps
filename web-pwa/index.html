@@ -21,6 +21,18 @@
 <body>
 <div class="phone" id="phone">
 
+  <div id="pager"><div id="track">
+  <!-- CHAT -->
+  <section class="screen light-screen" id="s-chat" aria-label="Chat">
+    <div class="head">
+      <div class="l"><button class="me" id="meav2" aria-label="You" style="width:38px;height:38px">?</button><button class="ib" id="chatsearchbtn" aria-label="Search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button></div>
+      <h1>Chat</h1>
+      <div class="r"><button class="ib" id="newchat" aria-label="New chat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.1A8 8 0 1 1 20 12z"/><path d="M12 9v6M9 12h6"/></svg></button></div>
+    </div>
+    <div class="search hidden" id="chatsearch"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="chatq" placeholder="Search groups" aria-label="Search groups"></div>
+    <div class="scroll" id="chatlist"></div>
+  </section>
+
   <!-- CAMERA (home) -->
   <section class="screen cam" id="s-camera" aria-label="Camera">
     <video id="viewfinder" autoplay playsinline muted></video>
@@ -54,25 +66,16 @@
     </div>
   </section>
 
-  <!-- CHAT -->
-  <section class="screen light-screen hidden" id="s-chat" aria-label="Chat">
-    <div class="head">
-      <div class="l"><button class="me" id="meav2" aria-label="You" style="width:38px;height:38px">?</button><button class="ib" id="chatsearchbtn" aria-label="Search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button></div>
-      <h1>Chat</h1>
-      <div class="r"><button class="ib" id="newchat" aria-label="New chat"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.1A8 8 0 1 1 20 12z"/><path d="M12 9v6M9 12h6"/></svg></button></div>
-    </div>
-    <div class="search hidden" id="chatsearch"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="chatq" placeholder="Search groups" aria-label="Search groups"></div>
-    <div class="scroll" id="chatlist"></div>
-  </section>
-
   <!-- MEMORIES -->
-  <section class="screen light-screen hidden" id="s-memories" aria-label="Memories">
+  <section class="screen light-screen" id="s-memories" aria-label="Memories">
     <div class="head"><div class="l"></div><h1>Memories</h1><div class="r"></div></div>
     <div class="scroll" id="memlist"></div>
   </section>
 
+  </div></div>
+
   <!-- THREAD -->
-  <section class="screen light-screen hidden" id="s-thread" aria-label="Group chat"></section>
+  <section class="screen light-screen thread" id="s-thread" aria-label="Group chat"></section>
 
   <nav class="nav" id="nav" aria-label="Main">
     <button data-tab="chat" aria-label="Chat"><svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.1A8 8 0 1 1 20 12z"/></svg><span class="dot hidden" id="navdot"></span></button>

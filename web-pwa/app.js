@@ -27,6 +27,17 @@ const I = {
 const S = { D: null, me: null, myName: '', groups: [], loaded: false, err: '', data: {}, subs: {}, names: {}, tab: 'camera', thread: null, q: '', preselect: null };
 
 /* ---------- small helpers ---------- */
+const APP_VERSION = '2026-10-31.3';
+function reportError(where, err) {
+  const msg = String((err && (err.message || err.error_description || err.code)) || err || 'unknown').slice(0, 900);
+  console.error(where, err);
+  try { S.D && S.D.logError && S.D.logError(where, msg, APP_VERSION); } catch { /* ignore */ }
+  return msg;
+}
+window.addEventListener('error', (e) => reportError('window.error', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => reportError('promise', e.reason));
+// only touch the DOM when the content actually changed (keeps taps and the keyboard stable)
+function setHTML(el, html) { if (el.__html === html) return false; el.__html = html; el.innerHTML = html; return true; }
 function toast(m) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = m; phone.appendChild(t); setTimeout(() => t.remove(), 2400); }
 const isOpen = (g) => Date.now() >= g.unlockAt;
 function left(ms) { let d = Math.max(0, ms - Date.now()); const D = Math.floor(d / 864e5); d -= D * 864e5; const H = Math.floor(d / 36e5); d -= H * 36e5; const M = Math.floor(d / 6e4); d -= M * 6e4; return { D, H, M, S: Math.floor(d / 1e3) }; }
@@ -39,16 +50,78 @@ const who = (id) => (id && id === S.me ? 'Me' : S.names[id] || 'Friend');
 const initial = (id) => ((id === S.me ? S.myName : who(id)) || '?').trim().slice(0, 1).toUpperCase();
 const avatar = (id, cls = '') => `<span class="av ${cls}" style="background:${colorOf(id)}">${esc(initial(id))}</span>`;
 const groupAvatar = (g, cls = '') => `<span class="av ${cls}" style="background:${colorOf(g.id)}"><span class="emo">${esc(g.emoji || '📸')}</span></span>`;
-async function resolveNames(ids) { try { Object.assign(S.names, await S.D.names(ids.filter(Boolean))); } catch { /* fine */ } }
+async function resolveNames(ids) {
+  const need = [...new Set(ids.filter(Boolean))].filter((i) => !S.names[i]);
+  if (!need.length) return false;
+  try { Object.assign(S.names, await S.D.names(need)); return true; } catch { return false; }
+}
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const inviteLink = (code) => `${location.origin}${location.pathname}?join=${code}`;
 
+
+/* ---------- add to home screen ---------- */
+const UA = navigator.userAgent;
+const IS_IOS = /iphone|ipad|ipod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const IN_APP_BROWSER = /Instagram|FBAN|FBAV|Snapchat|Line\/|TikTok|Messenger|GSA\//i.test(UA);
+const IOS_OTHER_BROWSER = IS_IOS && /CriOS|FxiOS|EdgiOS/.test(UA);
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvt = e; });
+window.addEventListener('appinstalled', () => { installEvt = null; try { localStorage.setItem('capsule:installed', '1'); } catch {} });
+const SHARE_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-3px"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+const PLUS_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" style="display:inline;vertical-align:-3px"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
+function iosSteps() {
+  if (IN_APP_BROWSER) return `<ol class="steps"><li>Tap <b>•••</b> (top right) and choose <b>Open in Safari</b> / <b>Open in browser</b>.</li><li>Then follow the steps there to add Capsule to your Home Screen.</li></ol>`;
+  const where = IOS_OTHER_BROWSER ? 'at the top right (next to the address bar)' : 'in the bar at the bottom (on newer iPhones it’s inside the <b>•••</b> button)';
+  return `<ol class="steps"><li>Tap <b>Share</b> ${SHARE_ICON} ${where}.</li><li>Scroll down and tap <b>Add to Home Screen</b> ${PLUS_ICON}</li><li>Tap <b>Add</b>, then open <b>Capsule</b> from your Home Screen.</li></ol>`;
+}
+/* Full-screen first step on iPhone: install BEFORE creating an account (Safari and the
+   Home Screen app don't share storage, so an account made in Safari would be lost). */
+function installGate() {
+  return new Promise((resolve) => {
+    const join = new URLSearchParams(location.search).get('join');
+    const el = document.createElement('section'); el.className = 'screen onb gate';
+    el.innerHTML = `<div><div class="logo"><img src="icons/icon-192.png" alt="" width="64" height="64" style="border-radius:16px"></div>
+      <h1>${join ? 'You’re invited 🔒' : 'Add Capsule to your Home Screen'}</h1>
+      <p>${join ? 'First add Capsule to your Home Screen, then open it from there. You’ll join the group automatically.' : 'It opens full-screen like a real app and remembers you.'}</p>
+      ${iosSteps()}</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${IOS_OTHER_BROWSER || IN_APP_BROWSER ? '' : '<div class="arrowhint" aria-hidden="true">↓</div>'}
+        <button class="linkbtn" id="gatecont">Continue in the browser instead</button>
+      </div>`;
+    phone.appendChild(el);
+    $('#gatecont', el).onclick = () => { try { localStorage.setItem('capsule:browserOK', '1'); } catch {} el.remove(); resolve(); };
+  });
+}
+/* Friendly popup: Android gets a real one-tap install; iPhone gets the steps. */
+function installPopup(force = false) {
+  if (isStandalone()) return;
+  try { if (!force && Date.now() - Number(localStorage.getItem('capsule:installAsked') || 0) < 3 * 864e5) return; localStorage.setItem('capsule:installAsked', String(Date.now())); } catch {}
+  if (!installEvt && !IS_IOS) return;
+  const sc = sheet(`<div class="body" style="align-items:center;text-align:center;padding-top:14px">
+      <img src="icons/icon-192.png" alt="" width="64" height="64" style="border-radius:16px">
+      <h2 style="margin:0;font-size:21px;font-weight:900">Add Capsule to your Home Screen?</h2>
+      <p class="fine" style="margin:0">Opens full-screen like a real app, straight into the camera.</p>
+      <div id="instbody" style="align-self:stretch;text-align:left"></div>
+      <button class="pillbtn" id="instyes" style="align-self:stretch">${installEvt ? 'Add to Home Screen' : 'Yes, show me how'}</button>
+      <button class="linkbtn" id="instno">Not now</button></div>`);
+  $('#instno', sc).onclick = () => sc.remove();
+  $('#instyes', sc).onclick = async () => {
+    if (installEvt) { const e = installEvt; installEvt = null; e.prompt(); try { await e.userChoice; } catch {} sc.remove(); return; }
+    $('#instbody', sc).innerHTML = iosSteps() + (IS_IOS && S.me ? '<p class="fine" style="margin:6px 0 0">On iPhone the Home Screen app starts fresh: type your name again and tap your invite link once more to rejoin your groups. Everything you already sent stays in the capsule.</p>' : '');
+    $('#instyes', sc).remove();
+  };
+}
+
 /* ---------- boot ---------- */
 async function boot() {
-  Camera.start();
+  placeTrack(false); paintNav(); syncCamera(0);
   render();
+  const demo = location.hash === '#demo';
+  if (navigator.webdriver && !demo) return; // deploy preview bots: show the camera only, don't create accounts
+  let hadSession = false; try { hadSession = !!localStorage.getItem('capsule-auth'); } catch {}
+  let browserOK = false; try { browserOK = !!localStorage.getItem('capsule:browserOK'); } catch {}
+  if (IS_IOS && !isStandalone() && !demo && !hadSession && !browserOK) await installGate();
   try {
-    const demo = location.hash === '#demo';
     S.D = demo ? await import('./data-demo.js') : await import('./data-supabase.js');
     S.me = await S.D.init();
     S.myName = (await S.D.getMyName()) || '';
@@ -69,12 +142,15 @@ async function boot() {
     S.groups = list.sort((a, b) => a.unlockAt - b.unlockAt);
     S.loaded = true; S.err = '';
     S.groups.forEach(watchGroup);
-    resolveNames(S.groups.flatMap((g) => g.members)).then(render);
+    resolveNames(S.groups.flatMap((g) => g.members)).then((n) => n && render());
     render();
   }, () => { S.loaded = true; S.err = 'Couldn’t load your chats. Pull down or reopen the app.'; render(); });
   setInterval(tick, 1000);
   const code = new URLSearchParams(location.search).get('join');
-  if (code) { history.replaceState(null, '', location.pathname); joinFlow(code); }
+  let joinedBefore = false; try { joinedBefore = !!(code && localStorage.getItem('capsule:joined:' + code.toUpperCase())); } catch {}
+  if (code && !joinedBefore) joinFlow(code);
+  if (code && isStandalone()) history.replaceState(null, '', location.pathname);
+  setTimeout(() => installPopup(), 2500);
 }
 
 function fatal([title, body]) {
@@ -109,37 +185,121 @@ function onboarding() {
 function watchGroup(g) {
   if (S.subs[g.id]) return;
   S.data[g.id] = { snaps: [], msgs: [] };
-  const a = S.D.onSnaps(g.id, (list) => { S.data[g.id].snaps = list; resolveNames(list.map((x) => x.by)).then(render); render(); });
-  const b = S.D.onMsgs(g.id, (list) => { S.data[g.id].msgs = list; resolveNames(list.map((x) => x.by)).then(render); render(); });
+  const a = S.D.onSnaps(g.id, (list) => { S.data[g.id].snaps = list; resolveNames(list.map((x) => x.by)).then((n) => n && render()); render(); });
+  const b = S.D.onMsgs(g.id, (list) => { S.data[g.id].msgs = list; resolveNames(list.map((x) => x.by)).then((n) => n && render()); render(); });
   S.subs[g.id] = [a, b];
 }
 
 function paintMe() { ['#meav', '#meav2'].forEach((s) => { const e = $(s); if (!e) return; e.textContent = initial(S.me); e.style.background = colorOf(S.me); }); }
 
-/* ---------- navigation ---------- */
-function go(tab) { S.tab = tab; S.thread = null; render(); }
-document.querySelectorAll('#nav [data-tab]').forEach((b) => (b.onclick = () => go(b.dataset.tab)));
-function render() {
-  const tab = S.thread ? 'thread' : S.tab;
-  ['camera', 'chat', 'memories', 'thread'].forEach((t) => $('#s-' + t).classList.toggle('hidden', t !== tab));
-  const nav = $('#nav'); nav.classList.toggle('hidden', tab === 'thread'); nav.classList.toggle('light', tab !== 'camera');
+/* ---------- navigation: swipe between Chat | Camera | Memories ---------- */
+const TABS = ['chat', 'camera', 'memories'];
+const pager = $('#pager'), track = $('#track'), threadEl = $('#s-thread');
+let camStopTimer = null;
+function overlayOpen() { return !!phone.querySelector('.preview, .viewer, .sendto-screen'); }
+function cameraWanted() { return (S.tab === 'camera' || S.dragging) && !S.thread && !overlayOpen() && !document.hidden; }
+function syncCamera(delay = 0) {
+  clearTimeout(camStopTimer);
+  if (cameraWanted()) Camera.start();
+  else camStopTimer = setTimeout(() => { if (!cameraWanted()) Camera.stop(); }, delay);
+}
+function placeTrack(animate, dx = 0) {
+  const W = pager.clientWidth, idx = TABS.indexOf(S.tab);
+  track.style.transition = animate ? 'transform .3s cubic-bezier(.2,.8,.2,1)' : 'none';
+  track.style.transform = `translate3d(${-idx * W + dx}px,0,0)`;
+}
+function paintNav() {
+  const nav = $('#nav');
+  nav.classList.toggle('light', S.tab !== 'camera');
   nav.querySelectorAll('[data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   const sealed = S.groups.filter((g) => !isOpen(g)).length;
   const dot = $('#navdot'); dot.classList.toggle('hidden', !sealed); dot.textContent = sealed;
-  if (tab === 'camera') Camera.start(); else if (!phone.querySelector('.preview')) Camera.stop();
-  if (tab === 'chat') renderChat();
-  if (tab === 'memories') renderMemories();
-  if (tab === 'thread') renderThread();
-  const h = nav.classList.contains('hidden') ? 0 : nav.offsetHeight;
-  ['camera', 'chat', 'memories'].forEach((t) => ($('#s-' + t).style.bottom = h + 'px'));
+  pager.style.bottom = nav.offsetHeight + 'px';
+}
+function setTab(tab, animate = true) {
+  S.tab = tab;
+  if (S.thread) closeThread(false);
+  placeTrack(animate); paintNav(); render(); syncCamera(animate ? 350 : 0);
+}
+function go(tab) { setTab(tab, true); }
+document.querySelectorAll('#nav [data-tab]').forEach((b) => (b.onclick = () => go(b.dataset.tab)));
+window.addEventListener('resize', () => placeTrack(false));
+
+function render() {
+  paintNav();
+  renderChat();
+  renderMemories();
+  if (S.thread) renderThread();
 }
 function tick() {
   if (S.thread) {
     const lb = $('#lockbar'); const g = S.groups.find((x) => x.id === S.thread);
-    if (lb && g) { if (isOpen(g) && !lb.classList.contains('open')) renderThread(); else if (!isOpen(g)) lb.querySelector('span').textContent = longLeft(g.unlockAt); }
-  } else if (new Date().getSeconds() === 0 && S.tab !== 'camera' && !phone.querySelector('.scrim')) render();
+    if (lb && g) { if (isOpen(g) && !lb.classList.contains('open')) renderThread(); else if (!isOpen(g)) { const sp = lb.querySelector('span'); if (sp) sp.textContent = longLeft(g.unlockAt); } }
+  }
+  if (new Date().getSeconds() === 0) render();
 }
-document.addEventListener('visibilitychange', () => { if (document.hidden) Camera.stop(); else if (S.tab === 'camera' && !S.thread) Camera.start(); });
+document.addEventListener('visibilitychange', () => syncCamera(0));
+
+/* Generic one-finger swipe: locks to an axis after a few px so vertical scrolling still works. */
+function onSwipe(el, { axis = 'x', ignore, start, move, end }) {
+  let sx = 0, sy = 0, st = 0, lock = null, active = false;
+  el.addEventListener('touchstart', (e) => {
+    active = false;
+    if (e.touches.length !== 1 || (ignore && ignore(e.target))) return;
+    const t = e.touches[0]; sx = t.clientX; sy = t.clientY; st = performance.now(); lock = null; active = true;
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (!active) return;
+    const t = e.touches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+    if (!lock) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      lock = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (lock !== axis) { active = false; return; }
+      start && start();
+    }
+    if (e.cancelable) e.preventDefault();
+    move && move(dx, dy);
+  }, { passive: false });
+  const finish = (e) => {
+    if (!active) return; active = false;
+    if (lock !== axis) return;
+    const t = e.changedTouches && e.changedTouches[0];
+    const dx = t ? t.clientX - sx : 0, dy = t ? t.clientY - sy : 0;
+    end && end(dx, dy, Math.max(1, performance.now() - st));
+  };
+  el.addEventListener('touchend', finish);
+  el.addEventListener('touchcancel', finish);
+}
+const noSwipe = (t) => !!t.closest('input, textarea, .shutwrap, .rail, [data-noswipe]');
+
+onSwipe(pager, {
+  ignore: (t) => noSwipe(t) || !!S.thread,
+  start: () => { S.dragging = true; clearTimeout(camStopTimer); Camera.start(); },
+  move: (dx) => {
+    const idx = TABS.indexOf(S.tab);
+    if ((idx === 0 && dx > 0) || (idx === TABS.length - 1 && dx < 0)) dx *= 0.25; // rubber band at the edges
+    placeTrack(false, dx);
+  },
+  end: (dx, _dy, dt) => {
+    S.dragging = false;
+    const W = pager.clientWidth, v = dx / dt, idx = TABS.indexOf(S.tab);
+    let next = idx;
+    if (dx < -W * 0.22 || v < -0.45) next = Math.min(TABS.length - 1, idx + 1);
+    else if (dx > W * 0.22 || v > 0.45) next = Math.max(0, idx - 1);
+    setTab(TABS[next], true);
+  },
+});
+
+/* Thread slides in from the right; swipe right (or tap back) to slide it out. */
+onSwipe(threadEl, {
+  ignore: (t) => !!t.closest('input, textarea'),
+  start: () => { threadEl.style.transition = 'none'; },
+  move: (dx) => { threadEl.style.transform = `translate3d(${Math.max(0, dx)}px,0,0)`; },
+  end: (dx, _dy, dt) => {
+    threadEl.style.transition = ''; threadEl.style.transform = '';
+    if (dx > threadEl.clientWidth * 0.3 || dx / dt > 0.45) closeThread(true);
+  },
+});
 
 /* ---------- live camera ---------- */
 const Camera = (() => {
@@ -159,7 +319,7 @@ const Camera = (() => {
       hidePerm();
       const caps = stream.getVideoTracks()[0].getCapabilities?.() || {};
       $('#camflash').classList.toggle('hidden', !caps.torch);
-      if (S.tab !== 'camera' || S.thread || document.hidden) stop();
+      if (!cameraWanted()) stop();
     } catch (e) {
       showPerm(e && e.name === 'NotAllowedError' ? 'denied' : 'error');
     } finally { starting = false; }
@@ -250,9 +410,19 @@ const Camera = (() => {
   sh.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); photo(); } });
 
   $('#camflip').onclick = flip;
+  // double-tap anywhere on the viewfinder flips the camera, like Snapchat
+  let lastTap = 0, lastX = 0, lastY = 0;
+  const camScreen = $('#s-camera');
+  camScreen.addEventListener('touchend', (e) => {
+    if (e.target.closest('button, input, .shutwrap, .rail, .perm')) return;
+    const t = e.changedTouches[0], now = performance.now();
+    if (now - lastTap < 320 && Math.hypot(t.clientX - lastX, t.clientY - lastY) < 40) { e.preventDefault(); lastTap = 0; flip(); }
+    else { lastTap = now; lastX = t.clientX; lastY = t.clientY; }
+  });
+  camScreen.addEventListener('dblclick', (e) => { if (!e.target.closest('button, input, .shutwrap, .rail, .perm')) flip(); });
   $('#camflash').onclick = toggleTorch;
   $('#campermretry').onclick = () => { stop(); start(); };
-  return { start, stop, pickMime };
+  return { start, stop, pickMime, flip };
 })();
 
 const openPick = (id) => { const p = $(id); p.value = ''; p.click(); };
@@ -277,13 +447,13 @@ function statusLine(g) {
 }
 function renderChat() {
   const el = $('#chatlist');
-  if (!S.loaded) { el.innerHTML = '<p class="fine" style="padding:20px 16px">Loading…</p>'; return; }
+  if (!S.loaded) { setHTML(el, '<p class="fine" style="padding:20px 16px">Loading…</p>'); return; }
   let list = S.groups.slice().sort((a, b) => ((lastActivity(b) || {}).at || b.createdAt || 0) - ((lastActivity(a) || {}).at || a.createdAt || 0));
   if (S.q) list = list.filter((g) => g.name.toLowerCase().includes(S.q));
   let h = '';
   if (!isStandalone() && !localStorage.getItem('capsule:installHidden')) {
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    h += `<div class="install"><span>📲</span><span>${ios ? 'Tap <b>Share</b> then <b>Add to Home Screen</b>' : 'Open the browser menu and tap <b>Install app</b> / <b>Add to Home screen</b>'} to use Capsule like a real app.</span><button id="instx" aria-label="Hide">×</button></div>`;
+    h += `<div class="install" id="instopen" role="button"><span>📲</span><span><b>Add Capsule to your Home Screen</b> to use it like a real app.</span><button id="instx" aria-label="Hide">×</button></div>`;
   }
   if (S.err) h += `<div class="banner">${esc(S.err)}</div>`;
   if (!S.groups.length && !S.err) {
@@ -292,18 +462,28 @@ function renderChat() {
     h += list.map((g) => `<button class="row" data-g="${esc(g.id)}">${groupAvatar(g)}<span class="meta"><span class="txt"><div class="name">${esc(g.name)}</div><div class="status">${statusLine(g)}</div></span>${!isOpen(g) ? `<span class="camb" data-snap="${esc(g.id)}" role="button" aria-label="Snap to ${esc(g.name)}">${I.cam}</span>` : ''}</span></button>`).join('');
     if (S.q && !list.length) h += '<p class="fine" style="padding:20px 16px">No groups match.</p>';
   }
-  el.innerHTML = h;
-  el.querySelectorAll('[data-g]').forEach((b) => (b.onclick = (e) => { const c = e.target.closest('[data-snap]'); if (c) { S.preselect = c.dataset.snap; go('camera'); return; } openThread(b.dataset.g); }));
-  const en = $('#emptynew'); if (en) en.onclick = newGroupSheet;
-  const ej = $('#emptyjoin'); if (ej) ej.onclick = joinSheet;
-  const ix = $('#instx'); if (ix) ix.onclick = (e) => { e.stopPropagation(); localStorage.setItem('capsule:installHidden', '1'); renderChat(); };
+  setHTML(el, h);
 }
+$('#chatlist').addEventListener('click', (e) => {
+  if (e.target.closest('#instx')) { e.stopPropagation(); localStorage.setItem('capsule:installHidden', '1'); renderChat(); return; }
+  if (e.target.closest('#instopen')) return installPopup(true);
+  if (e.target.closest('#emptynew')) return newGroupSheet();
+  if (e.target.closest('#emptyjoin')) return joinSheet();
+  const snapBtn = e.target.closest('[data-snap]'); if (snapBtn) { S.preselect = snapBtn.dataset.snap; go('camera'); return; }
+  const row = e.target.closest('[data-g]'); if (row) openThread(row.dataset.g);
+});
 
 /* ---------- sheets ---------- */
 function sheet(inner) {
   const sc = document.createElement('div'); sc.className = 'scrim';
   sc.innerHTML = `<div class="sheet" role="dialog"><div class="grab"></div>${inner}</div>`;
-  phone.appendChild(sc); sc.onclick = (e) => { if (e.target === sc) sc.remove(); }; return sc;
+  phone.appendChild(sc); sc.onclick = (e) => { if (e.target === sc) sc.remove(); };
+  const sh = $('.sheet', sc);
+  onSwipe(sh, { axis: 'y', ignore: (t) => !t.closest('.grab, .head') || !!t.closest('button'),
+    start: () => (sh.style.transition = 'none'),
+    move: (_dx, dy) => (sh.style.transform = `translate3d(0,${Math.max(0, dy)}px,0)`),
+    end: (_dx, dy) => { sh.style.transition = 'transform .2s'; if (dy > 110) sc.remove(); else sh.style.transform = ''; } });
+  return sc;
 }
 const sheetHead = (title, closeLeft) => `<div class="head" style="padding-top:6px"><div class="l">${closeLeft ? `<button type="button" class="ib" data-x aria-label="Close">${I.x}</button>` : ''}</div><h1>${esc(title)}</h1><div class="r">${closeLeft ? '' : `<button type="button" class="ib" data-x aria-label="Close">${I.x}</button>`}</div></div>`;
 function newChatSheet() {
@@ -329,8 +509,11 @@ function joinSheet(prefill = '') {
   };
 }
 async function joinFlow(code) {
-  try { const gid = await S.D.joinByCode(code); S.tab = 'chat'; openThread(gid); toast('You’re in!'); }
-  catch { joinSheet(code); }
+  try {
+    const gid = await S.D.joinByCode(code);
+    try { localStorage.setItem('capsule:joined:' + code.toUpperCase(), '1'); } catch {}
+    setTab('chat', false); openThread(gid); toast('You’re in! 🎉');
+  } catch (err) { reportError('joinFlow', err); joinSheet(code); }
 }
 function newGroupSheet() {
   const now = new Date(), pad = (n) => String(n).padStart(2, '0');
@@ -383,42 +566,74 @@ function createdSheet(id, name, code, unlockAt) {
 }
 
 /* ---------- thread ---------- */
-function openThread(id) { S.thread = id; render(); const sc = $('#tscroll'); if (sc) sc.scrollTop = sc.scrollHeight; }
-function renderThread() {
-  const g = S.groups.find((x) => x.id === S.thread); const el = $('#s-thread');
-  if (!g) { el.innerHTML = `<div class="thead"><button class="ib" id="tback" aria-label="Back">${I.chev}</button><div class="t"><b>Loading…</b></div></div>`; $('#tback').onclick = () => go('chat'); return; }
-  const open = isOpen(g); const d = S.data[g.id] || { snaps: [], msgs: [] };
+function openThread(id) {
+  S.thread = id; threadEl.__gid = null; renderThread();
+  threadEl.classList.add('open'); syncCamera(0);
+  const sc = $('#tscroll'); if (sc) sc.scrollTop = sc.scrollHeight;
+}
+function closeThread(animate = true) {
+  if (!S.thread) return;
+  S.thread = null;
+  const inp = $('#tmsg'); if (inp) inp.blur();
+  if (!animate) { threadEl.style.transition = 'none'; requestAnimationFrame(() => (threadEl.style.transition = '')); }
+  threadEl.classList.remove('open');
+  render(); syncCamera(animate ? 350 : 0);
+}
+function threadBody(g, d, open) {
   const items = [...d.snaps, ...d.msgs].sort((a, b) => a.at - b.at);
-  const typed = $('#tmsg') ? $('#tmsg').value : ''; const hadFocus = document.activeElement && document.activeElement.id === 'tmsg';
-  const prev = $('#tscroll'); const atBottom = !prev || prev.scrollHeight - prev.scrollTop - prev.clientHeight < 40; const prevTop = prev ? prev.scrollTop : 0;
-  let body = ''; let lastDay = '', lastBy = null, openBlk = false;
+  if (!items.length) return `<div class="empty">${groupAvatar(g)}<h2>${esc(g.name)}</h2><p style="margin:0">${open ? 'This group is open, but nothing was sealed.' : 'Send the first snap. It stays sealed until ' + esc(fmtDate(g.unlockAt)) + '.'}</p>${open ? '' : '<button class="pillbtn ghost" id="tinv">Invite friends</button>'}</div>`;
+  let body = '', lastDay = '', lastBy = null, openBlk = false;
+  const opens = esc(new Date(g.unlockAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }));
   for (const it of items) {
     const day = new Date(it.at).toDateString();
     if (day !== lastDay) { if (openBlk) { body += '</div></div>'; openBlk = false; } body += `<div class="day">${esc(fmtDay(it.at))}</div>`; lastDay = day; lastBy = null; }
     if (it.by !== lastBy) { if (openBlk) body += '</div></div>'; body += `<div class="blk"><div class="who" style="color:${colorOf(it.by)}">${esc(who(it.by))}</div><div class="lines" style="color:${colorOf(it.by)}">`; openBlk = true; lastBy = it.by; }
     if (it.type === 'msg') body += `<div class="mtext">${esc(it.text)}</div>`;
     else if (open) { const k = d.snaps.indexOf(it); body += `<button class="snapline open" data-v="${k}"><span class="sq open"></span>${it.kind === 'video' ? 'Video' : 'Snap'}<span class="sub">· tap to view</span></button>${it.caption ? `<div class="mtext" style="color:var(--muted)">“${esc(it.caption)}”</div>` : ''}`; }
-    else body += `<div class="snapline sealed"><span class="sq sealed"></span>Sealed ${it.kind === 'video' ? 'Video' : 'Snap'}<span class="sub">· opens ${esc(new Date(g.unlockAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }))}</span></div>`;
+    else body += `<div class="snapline sealed"><span class="sq sealed"></span>Sealed ${it.kind === 'video' ? 'Video' : 'Snap'}<span class="sub">· opens ${opens}</span></div>`;
   }
   if (openBlk) body += '</div></div>';
-  if (!items.length) body = `<div class="empty">${groupAvatar(g)}<h2>${esc(g.name)}</h2><p style="margin:0">${open ? 'This group is open, but nothing was sealed.' : 'Send the first snap. It stays sealed until ' + esc(fmtDate(g.unlockAt)) + '.'}</p>${open ? '' : `<button class="pillbtn ghost" id="tinv">${'Invite friends'}</button>`}</div>`;
-  el.innerHTML = `<div class="thead"><button class="ib" id="tback" aria-label="Back">${I.chev}</button>${groupAvatar(g, 'sm')}<div class="t" id="tname"><b>${esc(g.name)}</b><span>${g.members.length} ${g.members.length === 1 ? 'member' : 'members'} · ${d.snaps.length} snap${d.snaps.length === 1 ? '' : 's'}</span></div>${open && d.snaps.length ? `<button class="ib" id="tplay" aria-label="Play all" style="background:var(--open);color:#fff">${I.play}</button>` : ''}<button class="ib" id="tinfo" aria-label="Group info">${I.info}</button></div>
-    <div class="lockbar ${open ? 'open' : ''}" id="lockbar">${open ? 'Opened ' + esc(fmtDate(g.unlockAt)) + ' · tap a snap to watch' : I.lock + ' Opens in <span>' + longLeft(g.unlockAt) + '</span>'}</div>
-    <div class="scroll msgs" id="tscroll">${body}</div>
-    <form class="composer" id="tform">${!open ? `<button type="button" class="cbtn hot" id="tcam" aria-label="Send a snap">${I.cam}</button>` : ''}<input id="tmsg" placeholder="Send a chat" maxlength="500" autocomplete="off" aria-label="Message"><button class="send" aria-label="Send">${I.send}</button></form>`;
-  $('#tback').onclick = () => go('chat');
-  $('#tinfo').onclick = $('#tname').onclick = () => groupInfo(g);
-  const ti = $('#tinv'); if (ti) ti.onclick = () => shareInvite(g.name, g.code, g.unlockAt);
-  const tp = $('#tplay'); if (tp) tp.onclick = () => openViewer(d.snaps, 0);
-  el.querySelectorAll('[data-v]').forEach((b) => (b.onclick = () => openViewer(d.snaps, +b.dataset.v)));
-  const tc = $('#tcam'); if (tc) tc.onclick = () => { S.preselect = g.id; go('camera'); };
-  const inp = $('#tmsg'); inp.value = typed; if (hadFocus) inp.focus();
-  $('#tform').onsubmit = async (e) => {
-    e.preventDefault(); const text = inp.value.trim(); if (!text) return; inp.value = '';
-    try { await S.D.sendMsg(g.id, text); } catch { inp.value = text; toast('Message didn’t send'); }
-  };
-  const sc = $('#tscroll'); sc.scrollTop = atBottom ? sc.scrollHeight : prevTop;
+  return body;
 }
+function renderThread() {
+  const el = threadEl; const g = S.groups.find((x) => x.id === S.thread);
+  if (!g) { el.__gid = null; el.innerHTML = `<div class="thead"><button class="ib" id="tback" aria-label="Back">${I.chev}</button><div class="t"><b>Loading…</b></div></div>`; return; }
+  const open = isOpen(g); const d = S.data[g.id] || { snaps: [], msgs: [] };
+  const shellKey = g.id + ':' + open;
+  if (el.__gid !== shellKey) {
+    el.__gid = shellKey;
+    el.innerHTML = `<div class="thead"><button class="ib" id="tback" aria-label="Back">${I.chev}</button>${groupAvatar(g, 'sm')}<div class="t" id="tname"><b>${esc(g.name)}</b><span id="tsub"></span></div><span id="tplayslot"></span><button class="ib" id="tinfo" aria-label="Group info">${I.info}</button></div>
+      <div class="lockbar ${open ? 'open' : ''}" id="lockbar">${open ? 'Opened ' + esc(fmtDate(g.unlockAt)) + ' · tap a snap to watch' : I.lock + ' Opens in <span>' + longLeft(g.unlockAt) + '</span>'}</div>
+      <div class="scroll msgs" id="tscroll"></div>
+      <form class="composer" id="tform">${!open ? `<button type="button" class="cbtn hot" id="tcam" aria-label="Send a snap">${I.cam}</button>` : ''}<input id="tmsg" placeholder="Send a chat" maxlength="500" autocomplete="off" enterkeyhint="send" aria-label="Message"><button class="send" type="submit" aria-label="Send">${I.send}</button></form>`;
+    $('#tsub').__html = undefined;
+  }
+  const sub = `${g.members.length} ${g.members.length === 1 ? 'member' : 'members'} · ${d.snaps.length} snap${d.snaps.length === 1 ? '' : 's'}`;
+  if ($('#tsub').textContent !== sub) $('#tsub').textContent = sub;
+  setHTML($('#tplayslot'), open && d.snaps.length ? `<button class="ib" id="tplay" aria-label="Play all" style="background:var(--open);color:#fff">${I.play}</button>` : '');
+  const sc = $('#tscroll');
+  const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60, prevTop = sc.scrollTop;
+  if (setHTML(sc, threadBody(g, d, open))) sc.scrollTop = atBottom ? sc.scrollHeight : prevTop;
+}
+// one set of listeners for the thread, reading the current group at tap time
+threadEl.addEventListener('click', (e) => {
+  const g = S.groups.find((x) => x.id === S.thread); if (!g) { if (e.target.closest('#tback')) closeThread(true); return; }
+  const d = S.data[g.id] || { snaps: [], msgs: [] };
+  if (e.target.closest('#tback')) return closeThread(true);
+  if (e.target.closest('#tinfo') || e.target.closest('#tname')) return groupInfo(g);
+  if (e.target.closest('#tinv')) return shareInvite(g.name, g.code, g.unlockAt);
+  if (e.target.closest('#tplay')) return openViewer(d.snaps, 0);
+  const v = e.target.closest('[data-v]'); if (v) return openViewer(d.snaps, +v.dataset.v);
+  if (e.target.closest('#tcam')) { S.preselect = g.id; return go('camera'); }
+});
+threadEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const inp = $('#tmsg'); const gid = S.thread; const text = inp.value.trim();
+  if (!text || !gid) return;
+  inp.value = '';
+  try { await S.D.sendMsg(gid, text); }
+  catch (err) { inp.value = text; toast('Message didn’t send: ' + reportError('sendMsg', err).slice(0, 80)); }
+});
 function groupInfo(g) {
   const sc = sheet(`${sheetHead(g.name)}<div class="body">
     <div class="field"><span>${isOpen(g) ? 'Opened' : 'Opens'}</span><div style="font-weight:800;font-size:17px">${esc(fmtDate(g.unlockAt))}</div></div>
@@ -502,7 +717,9 @@ function openPreview(files) {
   const urls = files.map((f) => URL.createObjectURL(f)); let i = 0, caption = '', editing = false;
   const v = document.createElement('section'); v.className = 'screen preview'; phone.appendChild(v);
   Camera.stop();
-  const close = () => { urls.forEach((u) => URL.revokeObjectURL(u)); v.remove(); if (S.tab === 'camera' && !S.thread) Camera.start(); };
+  const close = () => { urls.forEach((u) => URL.revokeObjectURL(u)); v.remove(); syncCamera(0); };
+  onSwipe(v, { axis: 'y', ignore: (t) => !!t.closest('input, button'), move: (_dx, dy) => { v.style.transform = `translate3d(0,${Math.max(0, dy)}px,0)`; },
+    end: (_dx, dy) => { if (dy > 140) close(); else v.style.transform = ''; } });
   function draw() {
     const f = files[i];
     v.innerHTML = `<div class="media">${f.type.startsWith('video') ? `<video src="${urls[i]}" autoplay loop playsinline></video>` : `<img src="${urls[i]}" alt="Your snap">`}
@@ -514,15 +731,20 @@ function openPreview(files) {
     $('#pt', v).onclick = () => { editing = true; draw(); $('#pcap', v).focus(); };
     const pc = $('#pcap', v); if (pc) { pc.oninput = (e) => (caption = e.target.value); pc.onkeydown = (e) => { if (e.key === 'Enter') pc.blur(); }; }
     const pl = $('#pl', v), pr = $('#pr', v); if (pl) { pl.onclick = () => { if (i > 0) { i--; draw(); } }; pr.onclick = () => { if (i < files.length - 1) { i++; draw(); } }; }
-    $('#psend', v).onclick = () => sendTo(files, caption.trim(), () => { urls.forEach((u) => URL.revokeObjectURL(u)); v.remove(); });
+    $('#psend', v).onclick = () => {
+      try { sendTo(files, caption.trim(), () => { urls.forEach((u) => URL.revokeObjectURL(u)); v.remove(); syncCamera(0); }); }
+      catch (err) { toast('Couldn’t open Send To: ' + reportError('sendTo.open', err).slice(0, 80)); }
+    };
   }
   draw();
 }
 function sendTo(files, caption, closePreview) {
   const locked = S.groups.filter((g) => !isOpen(g));
   let picked = S.preselect && locked.find((g) => g.id === S.preselect) ? [S.preselect] : locked.length === 1 ? [locked[0].id] : [];
-  const v = document.createElement('section'); v.className = 'screen light-screen'; v.style.zIndex = 26; phone.appendChild(v);
-  let q = '';
+  const v = document.createElement('section'); v.className = 'screen light-screen sendto-screen'; v.style.zIndex = 26; phone.appendChild(v);
+  let q = '', sending = false;
+  onSwipe(v, { ignore: (t) => !!t.closest('input'), move: (dx) => { if (!sending) v.style.transform = `translate3d(${Math.max(0, dx)}px,0,0)`; },
+    end: (dx) => { if (!sending && dx > v.clientWidth * 0.3) v.remove(); else v.style.transform = ''; } });
   function draw() {
     const list = locked.filter((g) => g.name.toLowerCase().includes(q.toLowerCase()));
     v.innerHTML = `<div class="head"><div class="l"><button class="ib" id="sb" aria-label="Back">${I.chev}</button></div><h1>Send To</h1><div class="r"></div></div>
@@ -535,10 +757,12 @@ function sendTo(files, caption, closePreview) {
     const stq = $('#stq', v); stq.oninput = () => { q = stq.value; const pos = stq.selectionStart; draw(); const n = $('#stq', v); n.focus(); n.setSelectionRange(pos, pos); };
     v.querySelectorAll('[data-p]').forEach((b) => (b.onclick = () => { const id = b.dataset.p; picked = picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]; draw(); }));
     const sn = $('#snew', v); if (sn) sn.onclick = () => { v.remove(); newGroupSheet(); };
-    const sg = $('#sgo', v); if (sg) sg.onclick = doSend;
+    const sg = $('#sgo', v); if (sg) sg.onclick = () => doSend().catch((err) => { sending = false; toast('Couldn’t send: ' + reportError('doSend', err).slice(0, 90)); draw(); });
   }
   async function doSend() {
+    if (sending) return; sending = true;
     const btn = $('#sgo', v), prog = $('#sprog', v), bar = prog.firstElementChild; btn.disabled = true; prog.classList.remove('hidden');
+    bar.style.width = '4%';
     const total = files.length * picked.length; let done = 0; const fails = [];
     for (const f of files) {
       const isVid = f.type.startsWith('video');
@@ -552,14 +776,14 @@ function sendTo(files, caption, closePreview) {
       if (blob.size > MAX_BYTES) { fails.push('a video that’s too long (keep it under ~1 min)'); done += picked.length; continue; }
       for (const gid of picked) {
         try { await S.D.sendSnap(gid, blob, isVid ? 'video' : 'image', caption, (p) => (bar.style.width = ((done + p) / total) * 100 + '%')); }
-        catch (err) { fails.push(/full/i.test(String(err && err.message)) ? 'a snap: the capsule storage is full' : 'a snap'); }
+        catch (err) { const m = reportError('sendSnap', err); fails.push(/full/i.test(m) ? 'a snap: the capsule storage is full' : 'a snap (' + m.slice(0, 60) + ')'); }
         done++; bar.style.width = (done / total) * 100 + '%';
       }
     }
     const target = picked.length === 1 ? picked[0] : null;
     S.preselect = null; v.remove(); closePreview();
     if (fails.length) toast(`Couldn’t send ${fails.length === 1 ? fails[0] : fails.length + ' snaps'}. Try again.`); else toast(files.length > 1 ? `${files.length} snaps sealed 🔒` : 'Snap sealed 🔒');
-    S.tab = 'chat'; if (target) openThread(target); else go('chat');
+    setTab('chat', false); if (target) openThread(target);
   }
   draw();
 }
@@ -567,25 +791,27 @@ function sendTo(files, caption, closePreview) {
 /* ---------- memories ---------- */
 function renderMemories() {
   const el = $('#memlist');
-  if (!S.groups.length) { el.innerHTML = '<div class="empty"><h2>Nothing here yet</h2><p style="margin:0">When a group opens, its snaps show up here to watch back.</p></div>'; return; }
+  if (!S.groups.length) { setHTML(el, '<div class="empty"><h2>Nothing here yet</h2><p style="margin:0">When a group opens, its snaps show up here to watch back.</p></div>'); return; }
   const openG = S.groups.filter(isOpen).sort((a, b) => b.unlockAt - a.unlockAt), lockG = S.groups.filter((g) => !isOpen(g));
   let h = '';
   if (openG.length) h += '<div class="sect">Opened</div><div class="mem">' + openG.map((g) => { const sn = (S.data[g.id] || { snaps: [] }).snaps; return `<button class="memcard" data-m="${esc(g.id)}"><div style="height:100%;display:grid;place-items:center" class="big" data-cover="${esc(g.id)}">${esc(g.emoji || '📸')}</div><div class="ov"><b>${esc(g.name)}</b><span>${sn.length} snaps · ${esc(new Date(g.unlockAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))}</span></div></button>`; }).join('') + '</div>';
   if (lockG.length) h += '<div class="sect">Still sealed</div><div class="mem">' + lockG.map((g) => { const n = (S.data[g.id] || { snaps: [] }).snaps.length; return `<button class="memcard locked" data-t="${esc(g.id)}"><span class="big">${esc(g.emoji || '📸')}</span><div class="ov"><b>${esc(g.name)}</b><span style="color:var(--accent)">${I.lock} ${n} sealed · ${shortLeft(g.unlockAt)} left</span></div></button>`; }).join('') + '</div>';
-  el.innerHTML = h;
-  el.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => { const sn = (S.data[b.dataset.m] || { snaps: [] }).snaps; if (sn.length) openViewer(sn, 0); }));
-  el.querySelectorAll('[data-t]').forEach((b) => (b.onclick = () => { S.tab = 'chat'; openThread(b.dataset.t); }));
-  // covers load async (locked media can't be fetched, opened can)
+  if (!setHTML(el, h)) return;
+  // covers load async (only opened capsules can be downloaded)
   openG.forEach(async (g) => {
-    const first = (S.data[g.id] || { snaps: [] }).snaps.find((s) => s.kind === 'image'); if (!first) return;
+    const first = (S.data[g.id] || { snaps: [] }).snaps.find((x) => x.kind === 'image'); if (!first) return;
     try { const url = await S.D.mediaUrl(first); const slot = el.querySelector(`[data-cover="${CSS.escape(g.id)}"]`); if (slot) slot.outerHTML = `<img src="${esc(url)}" alt="" loading="lazy">`; } catch { /* keep emoji */ }
   });
 }
+$('#memlist').addEventListener('click', (e) => {
+  const m = e.target.closest('[data-m]'); if (m) { const sn = (S.data[m.dataset.m] || { snaps: [] }).snaps; if (sn.length) openViewer(sn, 0); return; }
+  const t = e.target.closest('[data-t]'); if (t) { setTab('chat', false); openThread(t.dataset.t); }
+});
 
 /* ---------- viewer ---------- */
 function openViewer(snaps, start) {
   if (!snaps.length) return; let i = start, timer = null, token = 0;
-  const v = document.createElement('section'); v.className = 'screen viewer'; v.setAttribute('role', 'dialog'); phone.appendChild(v);
+  const v = document.createElement('section'); v.className = 'screen viewer'; v.setAttribute('role', 'dialog'); phone.appendChild(v); syncCamera(0);
   async function draw() {
     clearTimeout(timer); const my = ++token; const s = snaps[i];
     v.innerHTML = `<div class="stage"><p style="opacity:.6">Loading…</p></div>
@@ -609,9 +835,17 @@ function openViewer(snaps, start) {
     const n = snaps[i + 1]; if (n && n.kind === 'image') S.D.mediaUrl(n).then((u) => { const p = new Image(); p.src = u; }).catch(() => {});
   }
   const next = () => { if (i < snaps.length - 1) { i++; draw(); } else close(); };
-  const close = () => { clearTimeout(timer); token++; document.removeEventListener('keydown', key); v.remove(); };
+  const close = () => { clearTimeout(timer); token++; document.removeEventListener('keydown', key); v.remove(); syncCamera(0); };
   const key = (e) => { if (e.key === 'Escape') close(); if (e.key === 'ArrowRight') next(); if (e.key === 'ArrowLeft' && i > 0) { i--; draw(); } };
-  document.addEventListener('keydown', key); draw();
+  document.addEventListener('keydown', key);
+  let vx = 0, vy = 0;
+  v.addEventListener('touchstart', (e) => { const t = e.touches[0]; vx = t.clientX; vy = t.clientY; }, { passive: true });
+  v.addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0], dx = t.clientX - vx, dy = t.clientY - vy;
+    if (dy > 90 && dy > Math.abs(dx)) close();
+    else if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) { if (dx < 0) next(); else if (i > 0) { i--; draw(); } }
+  });
+  draw();
 }
 
 boot();

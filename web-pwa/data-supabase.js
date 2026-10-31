@@ -43,12 +43,16 @@ export async function names(ids) {
 
 /* A tiny "live query": fetch now, refetch on realtime changes, and poll as a safety net. */
 function live(fetcher, cb, { table, filter, every = 15000 } = {}) {
-  let alive = true, busy = false, again = false;
+  let alive = true, busy = false, again = false, last = null;
   const run = async () => {
     if (!alive) return;
     if (busy) { again = true; return; }
     busy = true;
-    try { const d = await fetcher(); if (alive) cb(d); } catch (e) { console.warn(e); }
+    try {
+      const d = await fetcher();
+      const sig = JSON.stringify(d);
+      if (alive && sig !== last) { last = sig; cb(d); } // only notify when something actually changed
+    } catch (e) { console.warn(e); }
     busy = false;
     if (again) { again = false; run(); }
   };
@@ -140,4 +144,10 @@ export async function mediaUrl(snap) {
 
 export async function storageUsed() {
   return must(await sb.rpc('storage_used_bytes'));
+}
+
+let errCount = 0;
+export async function logError(where, message, version) {
+  if (!uid || errCount++ > 20) return; // never spam
+  try { await sb.from('client_errors').insert({ user_id: uid, where_: String(where).slice(0, 80), message: String(message).slice(0, 1000), ua: navigator.userAgent.slice(0, 300), app_version: version }); } catch { /* ignore */ }
 }

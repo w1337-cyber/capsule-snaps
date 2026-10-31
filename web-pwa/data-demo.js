@@ -45,3 +45,5 @@ export async function sendSnap(gid, blob, kind, caption, onProgress) {
   fire('s' + gid, snaps[gid].slice());
 }
 export async function mediaUrl(s) { return s.path; }
+
+export async function logError(where, message) { console.warn('[demo error]', where, message); }
