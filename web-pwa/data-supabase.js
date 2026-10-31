@@ -109,15 +109,35 @@ export async function sendSnap(gid, blob, kind, caption, onProgress) {
   const ext = type.includes('quicktime') ? 'mov' : (type.split('/')[1] || 'bin').replace('jpeg', 'jpg');
   const path = `${gid}/${uid}/${crypto.randomUUID()}.${ext}`;
   onProgress && onProgress(0.05);
-  must(await sb.storage.from('snaps').upload(path, blob, { contentType: type, upsert: false }));
+  const { error } = await sb.storage.from('snaps').upload(path, blob, { contentType: type, upsert: false, cacheControl: '31536000' });
+  if (error) {
+    // the upload rule refuses files when storage is ~full (keeps the project on the free plan)
+    if (/row-level security|policy/i.test(error.message || '')) {
+      let room = true;
+      try { room = must(await sb.rpc('storage_has_room')); } catch { /* ignore */ }
+      if (!room) throw new Error('capsule storage is full');
+    }
+    throw error;
+  }
   onProgress && onProgress(0.95);
   must(await sb.from('snaps').insert({ group_id: gid, kind, path, caption }));
 }
 
+// Signed links are kept for a week (memory + localStorage), so the same link is reused and the
+// phone's cache serves repeat views instead of downloading the file again.
+const URL_TTL = 7 * 24 * 3600;
 export async function mediaUrl(snap) {
-  const hit = urlCache[snap.path];
-  if (hit && hit.exp > Date.now()) return hit.url;
-  const d = must(await sb.storage.from('snaps').createSignedUrl(snap.path, 6 * 3600));
-  urlCache[snap.path] = { url: d.signedUrl, exp: Date.now() + 5 * 3600e3 };
+  const key = 'capsule:url:' + snap.path;
+  let hit = urlCache[snap.path];
+  if (!hit) { try { hit = JSON.parse(localStorage.getItem(key) || 'null'); } catch { hit = null; } }
+  if (hit && hit.exp > Date.now() + 3600e3) { urlCache[snap.path] = hit; return hit.url; }
+  const d = must(await sb.storage.from('snaps').createSignedUrl(snap.path, URL_TTL));
+  hit = { url: d.signedUrl, exp: Date.now() + URL_TTL * 1000 };
+  urlCache[snap.path] = hit;
+  try { localStorage.setItem(key, JSON.stringify(hit)); } catch { /* storage full or private mode */ }
   return d.signedUrl;
+}
+
+export async function storageUsed() {
+  return must(await sb.rpc('storage_used_bytes'));
 }

@@ -1,0 +1,21 @@
+# Free Supabase projects pause after 7 days without activity.
+# This pings the database every 2 days so Capsule stays awake all year (free on public repos).
+name: keep-supabase-awake
+on:
+  schedule:
+    - cron: "17 6 */2 * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://wllexcgwulzdkmrmtsht.supabase.co/rest/v1/groups?select=id&limit=1" \
+            -H "apikey: ${ANON}" -H "Authorization: Bearer ${ANON}")
+          echo "status $code"
+          test "$code" = "200"
+        env:
+          # public anon key (already shipped in the web app); row-level security keeps data private
+          ANON: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndsbGV4Y2d3dWx6ZGttcm10c2h0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0NDgxMTYsImV4cCI6MjEwOTAyNDExNn0.N2iYam8_apKlIP7HWOSWkBUrepfdKEjY433WCnoyfWM

@@ -6,7 +6,9 @@ const COLORS = ['#f23c57', '#0ea5e9', '#9b55e5', '#16a34a', '#ff6a13', '#e5367f'
 const colorOf = (id) => { let h = 0; for (const c of String(id || 'x')) h = (h * 31 + c.charCodeAt(0)) >>> 0; return COLORS[h % COLORS.length]; };
 const EMOJIS = ['🎆', '📸', '🌙', '🔥', '🌴', '🎉', '❄️', '🍾'];
 const MAX_VIDEO_SEC = 60;
-const MAX_BYTES = 95 * 1024 * 1024;
+const MAX_BYTES = 45 * 1024 * 1024; // per file (server limit 50 MB)
+const PHOTO_EDGE = 1440, PHOTO_Q = 0.8; // ≈200–350 KB per photo
+const VIDEO_BPS = 1_200_000, AUDIO_BPS = 64_000; // ≈9 MB per minute
 const I = {
   chev: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 5-7 7 7 7"/></svg>',
   x: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
@@ -47,7 +49,7 @@ async function boot() {
   render();
   try {
     const demo = location.hash === '#demo';
-    S.D = demo ? await import('./data-demo.js') : await import(window.CAPSULE_BACKEND || './data-firebase.js');
+    S.D = demo ? await import('./data-demo.js') : await import('./data-supabase.js');
     S.me = await S.D.init();
     S.myName = (await S.D.getMyName()) || '';
   } catch (e) {
@@ -187,13 +189,13 @@ const Camera = (() => {
     let sw = vw, sh = vh;
     if (vw / vh > target) sw = vh * target; else sh = vw / target;
     const sx = (vw - sw) / 2, sy = (vh - sh) / 2;
-    const scale = Math.min(1, 2160 / Math.max(sw, sh));
+    const scale = Math.min(1, PHOTO_EDGE / Math.max(sw, sh));
     const c = document.createElement('canvas'); c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
     const ctx = c.getContext('2d');
     if (facing === 'user') { ctx.translate(c.width, 0); ctx.scale(-1, 1); }
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, c.width, c.height);
     const fx = document.createElement('div'); fx.className = 'flashfx'; $('#s-camera').appendChild(fx); setTimeout(() => fx.remove(), 300);
-    c.toBlob((b) => b && openPreview([new File([b], 'snap.jpg', { type: 'image/jpeg' })]), 'image/jpeg', 0.88);
+    c.toBlob((b) => b && openPreview([new File([b], 'snap.jpg', { type: 'image/jpeg' })]), 'image/jpeg', PHOTO_Q);
   }
 
   function pickMime() {
@@ -206,7 +208,7 @@ const Camera = (() => {
     if (!held) return; // let go while the mic prompt was open
     const tracks = [...stream.getVideoTracks(), ...(audio ? audio.getAudioTracks() : [])];
     const mime = pickMime();
-    try { rec = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime, videoBitsPerSecond: 4_000_000 } : undefined); }
+    try { rec = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime, videoBitsPerSecond: VIDEO_BPS, audioBitsPerSecond: AUDIO_BPS } : { videoBitsPerSecond: VIDEO_BPS }); }
     catch { rec = new MediaRecorder(new MediaStream(tracks)); }
     chunks = [];
     rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
@@ -250,7 +252,7 @@ const Camera = (() => {
   $('#camflip').onclick = flip;
   $('#camflash').onclick = toggleTorch;
   $('#campermretry').onclick = () => { stop(); start(); };
-  return { start, stop };
+  return { start, stop, pickMime };
 })();
 
 const openPick = (id) => { const p = $(id); p.value = ''; p.click(); };
@@ -421,21 +423,80 @@ function groupInfo(g) {
   const sc = sheet(`${sheetHead(g.name)}<div class="body">
     <div class="field"><span>${isOpen(g) ? 'Opened' : 'Opens'}</span><div style="font-weight:800;font-size:17px">${esc(fmtDate(g.unlockAt))}</div></div>
     ${g.code ? `<div class="field"><span>Invite code</span><div class="codebox"><b>${esc(g.code)}</b></div><button class="pillbtn" id="ishare" style="margin-top:8px">Share invite link</button></div>` : ''}
-    <div class="field"><span>Members</span>${g.members.map((m) => `<div style="display:flex;align-items:center;gap:10px;padding:4px 0">${avatar(m, 'sm')}<b>${esc(who(m))}</b>${m === g.createdBy ? '<span class="fine">· made the group</span>' : ''}</div>`).join('')}</div></div>`);
+    <div class="field"><span>Members</span>${g.members.map((m) => `<div style="display:flex;align-items:center;gap:10px;padding:4px 0">${avatar(m, 'sm')}<b>${esc(who(m))}</b>${m === g.createdBy ? '<span class="fine">· made the group</span>' : ''}</div>`).join('')}</div>
+    <div class="field"><span>Free storage (all groups)</span><div class="fine" id="istore">Checking…</div></div></div>`);
   sc.querySelector('[data-x]').onclick = () => sc.remove();
+  if (S.D.storageUsed) S.D.storageUsed().then((b) => {
+    const el = $('#istore', sc); if (!el) return;
+    const mb = b / 1048576, pct = Math.min(100, (mb / 950) * 100);
+    el.innerHTML = `<div style="height:8px;border-radius:4px;background:var(--soft);overflow:hidden;margin:4px 0 6px"><i style="display:block;height:100%;width:${pct.toFixed(1)}%;background:${pct > 85 ? '#dc2626' : 'var(--accent)'}"></i></div>${mb < 1000 ? Math.round(mb) + ' MB' : (mb / 1024).toFixed(2) + ' GB'} of ~950 MB used`;
+  }).catch(() => { const el = $('#istore', sc); if (el) el.textContent = 'Couldn’t check right now.'; });
   const s = $('#ishare', sc); if (s) s.onclick = () => shareInvite(g.name, g.code, g.unlockAt);
 }
 
 /* ---------- preview + send to ---------- */
 async function shrinkImage(file) {
-  if (!/^image\/(jpeg|png|webp|heic|heif)$/i.test(file.type) && !/\.(heic|heif)$/i.test(file.name)) return file;
-  if (file.size < 1.5e6 && file.type === 'image/jpeg') return file;
+  const isImg = /^image\//i.test(file.type) || /\.(heic|heif|jpe?g|png|webp)$/i.test(file.name || '');
+  if (!isImg || file.type === 'image/gif') return file;
+  if (file.type === 'image/jpeg' && file.size < 400 * 1024) return file;
   try {
-    const bmp = await createImageBitmap(file); const k = Math.min(1, 2160 / Math.max(bmp.width, bmp.height));
+    const bmp = await createImageBitmap(file); const k = Math.min(1, PHOTO_EDGE / Math.max(bmp.width, bmp.height));
     const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-    return await new Promise((r) => c.toBlob((b) => r(b || file), 'image/jpeg', 0.86));
+    const out = await new Promise((r) => c.toBlob((b) => r(b), 'image/jpeg', PHOTO_Q));
+    return out && out.size < file.size ? out : file;
   } catch { return file; }
+}
+
+/* Re-encode big videos from the photo library to ~720p at a low bitrate (runs in real time). */
+async function compressVideo(file, onProgress) {
+  if (file.size <= 10 * 1024 * 1024 || !window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) return file;
+  const url = URL.createObjectURL(file);
+  const v = document.createElement('video');
+  v.src = url; v.playsInline = true; v.preload = 'auto'; v.setAttribute('playsinline', '');
+  let ac = null;
+  try {
+    await new Promise((res, rej) => { v.onloadedmetadata = res; v.onerror = () => rej(new Error('load')); setTimeout(() => rej(new Error('timeout')), 15000); });
+    const dur = Math.min(isFinite(v.duration) ? v.duration : MAX_VIDEO_SEC, MAX_VIDEO_SEC);
+    const k = Math.min(1, 720 / Math.max(1, Math.min(v.videoWidth, v.videoHeight)));
+    const c = document.createElement('canvas');
+    c.width = Math.max(2, Math.round(v.videoWidth * k / 2) * 2); c.height = Math.max(2, Math.round(v.videoHeight * k / 2) * 2);
+    const ctx = c.getContext('2d');
+    const stream = c.captureStream(30);
+    try {
+      ac = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = ac.createMediaStreamDestination();
+      ac.createMediaElementSource(v).connect(dest);
+      dest.stream.getAudioTracks().forEach((t) => stream.addTrack(t));
+      await ac.resume();
+    } catch { /* no audio track available: keep the video silent rather than fail */ }
+    const mime = Camera.pickMime();
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: VIDEO_BPS, audioBitsPerSecond: AUDIO_BPS } : { videoBitsPerSecond: VIDEO_BPS });
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+    const done = new Promise((res) => (rec.onstop = res));
+    await v.play();
+    rec.start(500);
+    await new Promise((res) => {
+      const draw = () => {
+        if (v.ended || v.currentTime >= dur) return res();
+        ctx.drawImage(v, 0, 0, c.width, c.height);
+        onProgress && onProgress(v.currentTime / dur);
+        requestAnimationFrame(draw);
+      };
+      v.onended = res; draw();
+    });
+    v.pause(); rec.stop(); await done;
+    const type = (rec.mimeType || mime || 'video/mp4').split(';')[0];
+    const out = new Blob(chunks, { type });
+    return out.size > 0 && out.size < file.size ? out : file;
+  } catch (e) {
+    console.warn('video compression skipped', e);
+    return file;
+  } finally {
+    URL.revokeObjectURL(url);
+    if (ac) ac.close().catch(() => {});
+  }
 }
 function openPreview(files) {
   const urls = files.map((f) => URL.createObjectURL(f)); let i = 0, caption = '', editing = false;
@@ -482,11 +543,16 @@ function sendTo(files, caption, closePreview) {
     for (const f of files) {
       const isVid = f.type.startsWith('video');
       let blob;
-      try { blob = isVid ? f : await shrinkImage(f); } catch { blob = f; }
-      if (blob.size > MAX_BYTES) { fails.push('a video that’s too long'); done += picked.length; continue; }
+      const names = $('.sendbar .names', v);
+      try {
+        if (isVid) { names.textContent = 'Compressing video…'; blob = await compressVideo(f, (p) => (names.textContent = `Compressing video… ${Math.round(p * 100)}%`)); }
+        else blob = await shrinkImage(f);
+      } catch { blob = f; }
+      names.textContent = files.length > 1 ? `Sealing ${files.indexOf(f) + 1} of ${files.length}…` : 'Sealing…';
+      if (blob.size > MAX_BYTES) { fails.push('a video that’s too long (keep it under ~1 min)'); done += picked.length; continue; }
       for (const gid of picked) {
         try { await S.D.sendSnap(gid, blob, isVid ? 'video' : 'image', caption, (p) => (bar.style.width = ((done + p) / total) * 100 + '%')); }
-        catch { fails.push('a snap'); }
+        catch (err) { fails.push(/full/i.test(String(err && err.message)) ? 'a snap: the capsule storage is full' : 'a snap'); }
         done++; bar.style.width = (done / total) * 100 + '%';
       }
     }
